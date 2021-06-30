@@ -1,0 +1,232 @@
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    
+    <title>CircuitPython WebBluetooth Test</title>
+  </head>
+  <body>
+    <h1>CircuitPython WebBluetooth Test</h1>
+
+<p>
+The first step is selecting the device you want to use.
+</p>
+<button id="requestBluetoothDevice">Request Bluetooth Device</button>
+<p>
+If you've done this before and the persistent device API works, then you can click this intead:
+</p>
+<button id="connectToBluetoothDevices">Connect to Bluetooth Devices</button>
+<p>
+Once you are connected, we need to prompt a bond. Without this CircuitPython boards with USB won't continue to advertise after a hard reset or powerloss.
+</p>
+<button id="promptBond">Bond</button>
+
+<script>
+const bleNusServiceUUID  = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const bleNusCharRXUUID   = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const bleNusCharTXUUID   = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+const bleFileCharVersionUUID = 'adaf0100-4669-6c65-5472-616e73666572';
+const bleFileCharTransferUUID = 'adaf0200-4669-6c65-5472-616e73666572';
+
+var bleDevice;
+var bleServer;
+var serialService;
+var rxCharacteristic;
+var txCharacteristic;
+var fileService;
+var transferCharacteristic;
+
+
+let connect = document.querySelector('#connectToBluetoothDevices');
+let request = document.querySelector('#requestBluetoothDevice');
+let bond = document.querySelector('#promptBond');
+
+var connected = false;
+
+async function onConnectToBluetoothDevicesButtonClick() {
+  try {
+    console.log('Getting existing permitted Bluetooth devices...');
+    const devices = await navigator.bluetooth.getDevices();
+
+    console.log('> Got ' + devices.length + ' Bluetooth devices.');
+    // These devices may not be powered on or in range, so scan for
+    // advertisement packets from them before connecting.
+    for (const device of devices) {
+      connectToBluetoothDevice(device);
+    }
+  }
+  catch(error) {
+    console.log('Argh! ' + error);
+  }
+}
+
+async function loadFile(filename) {
+  console.log("load", filename);
+  var header = new ArrayBuffer(12);
+  var view = new DataView(header);
+  let encoded = new TextEncoder().encode(filename);
+  view.setUint8(0, 0x10);
+  // Offset 1 is reserved
+  view.setUint16(2, encoded.byteLength, true);
+  view.setUint32(4, 0, true);
+  view.setUint32(8, 512, true);
+  await transferCharacteristic.writeValue(header);
+  await transferCharacteristic.writeValue(encoded);
+  console.log("wrote read");
+}
+
+async function switchToDevice(device) {
+  bleDevice = device;
+  bleDevice.addEventListener("gattserverdisconnected", onDisconnected);
+  bleServer = bleDevice.gatt;
+  console.log("connected", bleServer);
+
+  const services = await bleServer.getPrimaryServices();
+  console.log(services);
+
+  console.log('Getting Transfer Service...');
+  fileService = await bleServer.getPrimaryService(0xfebb);
+  const version = await fileService.getCharacteristic(bleFileCharVersionUUID);
+  transferCharacteristic = await fileService.getCharacteristic(bleFileCharTransferUUID);
+  console.log(await version.readValue(), transferCharacteristic);
+
+  serialService = await bleServer.getPrimaryService(bleNusServiceUUID);
+  // TODO: create a terminal for each serial service
+  txCharacteristic = await serialService.getCharacteristic(bleNusCharTXUUID);
+  rxCharacteristic = await serialService.getCharacteristic(bleNusCharRXUUID);
+  console.log(txCharacteristic, rxCharacteristic);
+  transferCharacteristic.addEventListener('characteristicvaluechanged',
+      onTransferNotifty);
+  await transferCharacteristic.startNotifications();
+  document.querySelector('#promptBond').disabled = false;
+  loadFile("/code.py");
+}
+
+async function connectToBluetoothDevice(device) {
+  const abortController = new AbortController();
+
+  device.addEventListener('advertisementreceived', async (event) => {
+    console.log('> Received advertisement from "' + device.name + '"...');
+    // Stop watching advertisements to conserve battery life.
+    abortController.abort();
+    console.log('Connecting to GATT Server from "' + device.name + '"...');
+    try {
+      await device.gatt.connect()
+      console.log('> Bluetooth device "' +  device.name + ' connected.');
+      await switchToDevice(device);
+    }
+    catch(error) {
+      console.log('Argh! ' + error);
+    }
+  }, { once: true });
+
+  try {
+    console.log('Watching advertisements from "' + device.name + '"...');
+    await device.watchAdvertisements({ signal: abortController.signal });
+  }
+  catch(error) {
+    console.log('Argh! ' + error);
+  }
+}
+
+const ANY_COMMAND = 0;
+const THIS_COMMAND = 1;
+const READ_DATA = 0x11;
+
+var incomingFile = null;
+var incomingOffset = 0;
+
+async function processReadData(payload) {
+  console.log("processReadData", payload);
+  const headerSize = 16;
+  let status = payload.getUint8(1);
+  let chunk_offset = payload.getUint32(4, true);
+  let total_length = payload.getUint32(8, true);
+  let chunk_length = payload.getUint32(12, true);
+  console.log(status, chunk_offset, total_length, chunk_length);
+  if (payload.byteLength == headerSize + chunk_length) {
+    console.log("full payload");
+    if (incomingFile == null) {
+      incomingFile = new Uint8Array(total_length);
+    }
+    incomingFile.set(new Uint8Array(payload.buffer.slice(headerSize, payload.byteLength - headerSize)), chunk_offset);
+    incomingOffset += chunk_length;
+    console.log(incomingFile, new TextDecoder().decode(incomingFile));
+    return READ_DATA;
+  }
+
+  return THIS_COMMAND;
+}
+
+var command = 0;
+var offset = 0;
+// We have a ton of memory so just buffer everything :-)
+var buffer = new Uint8Array(4096);
+async function onTransferNotifty(event) {
+  buffer.set(new Uint8Array(event.target.value.buffer), offset);
+  console.log(buffer);
+  command = buffer[0];
+  offset += event.target.value.byteLength;
+  console.log("notify", command.toString(16), buffer.slice(0, offset));
+  if (command == 0x11) {
+    command = await processReadData(new DataView(buffer.buffer, 0, offset));
+  }
+  if (command != THIS_COMMAND) {
+    console.log("reset buffer");
+    offset = 0;
+  }
+}
+
+async function onBond() {
+  console.log("bond");
+  transferCharacteristic.addEventListener('characteristicvaluechanged',
+      onTransferNotifty);
+  await transferCharacteristic.startNotifications();
+  console.log("bond done");
+}
+
+async function onDisconnected() {
+  console.log('disconnected');
+  await bleServer.connect();
+}
+
+async function onRequestBluetoothDeviceButtonClick() {
+  try {
+    console.log('Requesting any Bluetooth device...');
+    bleDevice = await navigator.bluetooth.requestDevice({
+     filters: [{services: [0xfebb]},], // <- Prefer filters to save energy & show relevant devices.
+     // acceptAllDevices: true,,
+      optionalServices: [0xfebb, bleNusServiceUUID]
+    });
+
+    console.log('> Requested ' + device.name);
+    await bleDevice.gatt.connect();
+    switchToDevice(bleDevice);
+  }
+  catch(error) {
+    console.log('Argh! ' + error);
+  }
+}
+</script>
+
+<script>
+  if (navigator.bluetooth) {
+    connect.addEventListener('click', function() {
+        onConnectToBluetoothDevicesButtonClick();
+    });
+    request.addEventListener('click', function() {
+        onRequestBluetoothDeviceButtonClick();
+    });
+    bond.addEventListener('click', function() {
+        onBond();
+    });
+
+    bond.disabled = true;
+  } else {
+    console.log("bluetooth not supported on this browser");
+  }
+</script>
+
+  </body>
+</html>
