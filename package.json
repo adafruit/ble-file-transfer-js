@@ -1,0 +1,29 @@
+{
+  "name": "@adafruit/ble-file-transfer",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "version": "0.0.1",
+  "description": "WebBluetooth library for transferring files over BLE",
+  "main": "adafruit-ble-file-transfer.js",
+  "dependencies": {
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/adafruit/ble-file-transfer-js.git"
+  },
+  "keywords": [
+    "BLE",
+    "WebBluetooth"
+  ],
+  "author": "Scott Shawcroft",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/adafruit/ble-file-transfer-js/issues"
+  },
+  "homepage": "https://github.com/adafruit/ble-file-transfer-js#readme"
+}
