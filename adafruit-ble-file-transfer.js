@@ -20,7 +20,7 @@ const MOVE_STATUS = 0x61;
 
 const STATUS_OK = 0x01;
 const STATUS_ERROR = 0x02;
-const STATUS_ERROR_READ_ONLY = 0x05;
+const STATUS_ERROR_USB_MOUNTED = 0x05;
 
 // Flags
 const FLAG_DIRECTORY = 0x01;
@@ -205,7 +205,7 @@ class FileTransferClient {
         let freeSpace = payload.getUint32(8, true);
         console.log(status, chunkOffset, freeSpace);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_READ_ONLY) {
+            if (status == STATUS_ERROR_USB_MOUNTED) {
                 console.log("Unable to write while USB connected");
             } else if (status == STATUS_ERROR) {
                 console.log("Invalid Path");
@@ -389,7 +389,7 @@ class FileTransferClient {
         }
 
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_READ_ONLY) {
+            if (status == STATUS_ERROR_USB_MOUNTED) {
                 console.log("Unable to write while USB connected");
             } else if (status == STATUS_ERROR) {
                 console.log("Invalid Path");
@@ -416,7 +416,7 @@ class FileTransferClient {
 
         let status = payload.getUint8(1);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_READ_ONLY) {
+            if (status == STATUS_ERROR_USB_MOUNTED) {
                 console.log("Unable to write while USB connected");
             } else if (status == STATUS_ERROR) {
                 console.log("File or Folder not found");
@@ -443,7 +443,7 @@ class FileTransferClient {
         
         let status = payload.getUint8(1);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_READ_ONLY) {
+            if (status == STATUS_ERROR_USB_MOUNTED) {
                 console.log("Unable to write while USB connected");
             } else if (status == STATUS_ERROR) {
                 console.log("Unable to move file");
