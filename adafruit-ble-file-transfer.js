@@ -19,8 +19,8 @@ const MOVE_COMMAND = 0x60;
 const MOVE_STATUS = 0x61;
 
 const STATUS_OK = 0x01;
-const STATUS_ERROR = 0x02
-const STATUS_ERROR_READ_ONLY = 0x05
+const STATUS_ERROR = 0x02;
+const STATUS_ERROR_READ_ONLY = 0x05;
 
 // Flags
 const FLAG_DIRECTORY = 0x01;
@@ -165,7 +165,7 @@ class FileTransferClient {
     async writeFile(filename, offset, contents, modificationTime) {
         await this.checkConnection();
         if (modificationTime === undefined) {
-            modificationTime = Date.now()
+            modificationTime = Date.now();
         }
         var header = new ArrayBuffer(20);
         var view = new DataView(header);
@@ -383,7 +383,6 @@ class FileTransferClient {
         console.log("processMkDirStatus", payload);
         const headerSize = 16;
         let status = payload.getUint8(1);
-        let modificationTime = payload.getBigUint64(8);
 
         if (payload.byteLength < headerSize) {
             return THIS_COMMAND;
