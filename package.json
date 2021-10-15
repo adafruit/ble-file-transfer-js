@@ -3,7 +3,7 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "version": "0.0.7",
+  "version": "0.9.0",
   "description": "WebBluetooth library for transferring files over BLE",
   "main": "adafruit-ble-file-transfer.js",
   "dependencies": {
@@ -20,7 +20,7 @@
     "BLE",
     "WebBluetooth"
   ],
-  "author": "Scott Shawcroft",
+  "author": "Scott Shawcroft, Melissa LeBlanc-Williams",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/adafruit/ble-file-transfer-js/issues"
