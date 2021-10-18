@@ -39,6 +39,7 @@ class FileTransferClient {
         this._transfer = null;
         this._device = bleDevice;
         bleDevice.addEventListener("gattserverdisconnected", this.onDisconnected.bind(this));
+        this._onTransferNotifty = this.onTransferNotifty.bind(this);
     }
 
     async onDisconnected() {
@@ -72,7 +73,8 @@ class FileTransferClient {
         console.log("version ok");
         this._transfer = await service.getCharacteristic(bleFileCharTransferUUID);
         console.log(this._transfer);
-        this._transfer.addEventListener('characteristicvaluechanged', this.onTransferNotifty.bind(this));
+        this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotifty);
+        this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotifty);
         console.log("event listener added");
         await this._transfer.startNotifications();
         console.log("check connection done");
@@ -162,14 +164,14 @@ class FileTransferClient {
         return p;
     }
 
-    async writeFile(filename, offset, contents, modificationTime) {
+    async writeFile(path, offset, contents, modificationTime) {
         await this.checkConnection();
         if (modificationTime === undefined) {
             modificationTime = Date.now();
         }
         var header = new ArrayBuffer(20);
         var view = new DataView(header);
-        let encoded = new TextEncoder().encode(filename);
+        let encoded = new TextEncoder().encode(path);
         view.setUint8(0, WRITE_COMMAND);
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
@@ -192,7 +194,6 @@ class FileTransferClient {
         return p;
     }
 
-
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms))
     }
@@ -202,7 +203,7 @@ class FileTransferClient {
         let status = payload.getUint8(1);
         // Two bytes of padding.
         let chunkOffset = payload.getUint32(4, true);
-        let freeSpace = payload.getUint32(8, true);
+        let freeSpace = payload.getUint32(16, true);
         console.log(status, chunkOffset, freeSpace);
         if (status != STATUS_OK) {
             if (status == STATUS_ERROR_USB_MOUNTED) {
