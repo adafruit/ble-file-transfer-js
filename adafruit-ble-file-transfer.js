@@ -43,7 +43,7 @@ class FileTransferClient {
     }
 
     async onDisconnected() {
-        console.log("ftc disconnected");
+        //ftc disconnected;
         this._transfer = null;
         if (this._reject != null) {
             this._reject("disconnected");
@@ -59,30 +59,24 @@ class FileTransferClient {
             throw "Command in progress";
         }
         if (this._transfer != null) {
-            console.log("connection ok");
+            //connection ok
             return;
         }
-        console.log("check connection");
+        //check connection
         let service = await this._device.gatt.getPrimaryService(0xfebb);
         const versionChar = await service.getCharacteristic(bleFileCharVersionUUID);
         let version = (await versionChar.readValue()).getUint32(0, true);
         if (version != 4) {
-            console.log(version);
-            return Promise.reject("Unsupported version");
+            return Promise.reject("Unsupported version: " + version);
         }
-        console.log("version ok");
+        //version ok
         this._transfer = await service.getCharacteristic(bleFileCharTransferUUID);
-        console.log(this._transfer);
         this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotifty);
         this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotifty);
-        console.log("event listener added");
         await this._transfer.startNotifications();
-        console.log("check connection done");
     }
 
     async _write(value) {
-        console.log("write");
-        console.log(value);
         try {
             if (value.byteLength < BYTES_PER_WRITE) {
                 await this._transfer.writeValueWithoutResponse(value);
@@ -92,7 +86,6 @@ class FileTransferClient {
             while (offset < value.byteLength) {
                 let len = Math.min(value.byteLength - offset, BYTES_PER_WRITE);
                 let chunk_contents = value.slice(offset, offset + len);
-                console.log("write subarray", offset, chunk_contents);
                 // Delay to ensure the last value was written to the device.
                 await this.sleep(100);
                 await this._transfer.writeValueWithoutResponse(chunk_contents);
@@ -106,15 +99,13 @@ class FileTransferClient {
 
     async bond() {
         await this.checkConnection();
-        console.log("bonded internally");
+        //bonded internally
     }
 
     async onTransferNotifty(event) {
-      console.log(this._offset, event.target.value.buffer);
       this._buffer.set(new Uint8Array(event.target.value.buffer), this._offset);
       this._command = this._buffer[0];
       this._offset += event.target.value.byteLength;
-      console.log("notify", "0x" + this._command.toString(16), this._buffer.slice(0, this._offset));
       if (this._command == READ_DATA) {
           this._command = await this.processReadData(new DataView(this._buffer.buffer, 0, this._offset));
       } else if (this._command == WRITE_PACING) {
@@ -131,10 +122,10 @@ class FileTransferClient {
           console.log("Unknown Command :" + this._command);
       }
       if (this._command != THIS_COMMAND) {
-          console.log("reset buffer");
+          //reset buffer
           this._offset = 0;
       } else {
-          console.log("wait for more");
+          //wait for more
       }
     }
 
@@ -143,7 +134,6 @@ class FileTransferClient {
         this._incomingFile = null;
         this._incomingOffset = 0;
 
-        console.log("load", filename);
         var header = new ArrayBuffer(12);
         var view = new DataView(header);
         let encoded = new TextEncoder().encode(filename);
@@ -154,13 +144,13 @@ class FileTransferClient {
         view.setUint32(8, this._buffer.byteLength - 16, true);
         await this._write(header);
         await this._write(encoded);
-        console.log("wrote read");
+        //wrote read
         let p = new Promise((resolve, reject) => {
-            console.log("start read");
+            //start read
             this._resolve = resolve;
             this._reject = reject;
         });
-        console.log("read return");
+        //read return
         return p;
     }
 
@@ -178,19 +168,17 @@ class FileTransferClient {
         view.setUint32(4, offset, true);
         view.setBigUint64(8, BigInt(modificationTime * 1000000), true);
         view.setUint32(16, offset + contents.byteLength, true);
-        console.log("write", offset, offset + contents.byteLength);
-        console.log("write header", header, encoded);
         await this._write(header);
         await this._write(encoded);
         this._outgoingContents = contents;
         this._outgoingOffset = offset;
-        console.log("wrote write");
+        //wrote write
         let p = new Promise((resolve, reject) => {
-            console.log("start write");
+            //start write
             this._resolve = resolve;
             this._reject = reject;
         });
-        console.log("write return");
+        //write return
         return p;
     }
 
@@ -199,12 +187,10 @@ class FileTransferClient {
     }
 
     async processWritePacing(payload) {
-        console.log("processWritePacing", payload);
         let status = payload.getUint8(1);
         // Two bytes of padding.
         let chunkOffset = payload.getUint32(4, true);
         let freeSpace = payload.getUint32(16, true);
-        console.log(status, chunkOffset, freeSpace);
         if (status != STATUS_OK) {
             if (status == STATUS_ERROR_USB_MOUNTED) {
                 console.log("Unable to write while USB connected");
@@ -232,7 +218,6 @@ class FileTransferClient {
         view.setUint32(4, chunkOffset, true);
         let remaining = Math.min(this._outgoingOffset + this._outgoingContents.byteLength - chunkOffset, freeSpace);
         view.setUint32(8, remaining, true);
-        console.log("write header", chunkOffset, remaining);
         await this._write(header);
         let baseOffset = chunkOffset - this._outgoingOffset;
         await this._write(this._outgoingContents.subarray(baseOffset, baseOffset + remaining));
@@ -240,15 +225,19 @@ class FileTransferClient {
     }
 
     async processReadData(payload) {
-        console.log("processReadData", payload);
         const headerSize = 16;
         let status = payload.getUint8(1);
         let chunkOffset = payload.getUint32(4, true);
         let totalLength = payload.getUint32(8, true);
         let chunkLength = payload.getUint32(12, true);
-        console.log("read data", status, chunkOffset, totalLength, chunkLength);
         if (status != STATUS_OK) {
-            console.log("read error");
+            if (status == STATUS_ERROR_USB_MOUNTED) {
+                console.log("Unable to read while USB connected");
+            } else if (status == STATUS_ERROR) {
+                console.log("Invalid Path");
+            } else {
+                console.log("Unknown Status", status);
+            }
             this._reject(status);
             this._resolve = null;
             this._reject = null;
@@ -257,10 +246,10 @@ class FileTransferClient {
             return ANY_COMMAND;
         }
         if (payload.byteLength < headerSize + chunkLength) {
-            console.log("need more");
+          // need more
           return THIS_COMMAND;
         }
-        console.log("full payload");
+        // full payload
         if (this._incomingFile == null) {
           this._incomingFile = new Uint8Array(totalLength);
         }
@@ -269,7 +258,6 @@ class FileTransferClient {
 
         let remaining = this._incomingFile.byteLength - this._incomingOffset;
         if (remaining == 0) {
-            console.log(this._incomingFile);
             this._resolve(new TextDecoder().decode(this._incomingFile));
             this._resolve = null;
             this._reject = null;
@@ -285,13 +273,10 @@ class FileTransferClient {
         view.setUint32(4, this._incomingOffset, true);
         view.setUint32(8, Math.min(this._buffer.byteLength - 12, remaining), true);
         await this._write(header);
-        console.log(this._incomingFile, );
         return READ_DATA;
     }
 
     async processListDirEntry(payload, offset=0) {
-        console.log("processListDirEntry", payload);
-
         let paths = [];
         let b = this._buffer.buffer;
         const headerSize = 28;
@@ -304,9 +289,14 @@ class FileTransferClient {
         let modificationTime = payload.getBigUint64(16, true);
         let fileSize = payload.getUint32(24, true);
         
-        console.log("list data", status, pathLength, i, totalItems, flags, modificationTime, fileSize);
         if (status != STATUS_OK) {
-            console.log("read error");
+            if (status == STATUS_ERROR_USB_MOUNTED) {
+                console.log("Unable to read while USB connected");
+            } else if (status == STATUS_ERROR) {
+                console.log("Invalid Path");
+            } else {
+                console.log("Unknown Status", status);
+            }
             this._reject(status);
             this._resolve = null;
             this._reject = null;
@@ -330,12 +320,11 @@ class FileTransferClient {
             offset += headerSize + pathLength;
         }
 
-        console.log("received " + (i + 1) + " of " + totalItems + "...")
         if (i < totalItems - 1) {
-            console.log("need more");
+            // need more
             return THIS_COMMAND;
         }
-        console.log("full payload");
+        // full payload
 
         offset = 0;
         while (offset < payload.byteLength) {
@@ -368,7 +357,6 @@ class FileTransferClient {
                 fileDate: Number(modificationTime / BigInt(1000000)),
             });
             offset += headerSize + pathLength;
-            //console.log((i + 1) + " out of " + totalItems);
             if (status != STATUS_OK) {
                 break;
             }
@@ -381,7 +369,6 @@ class FileTransferClient {
     }
 
     async processMkDirStatus(payload) {
-        console.log("processMkDirStatus", payload);
         const headerSize = 16;
         let status = payload.getUint8(1);
 
@@ -408,7 +395,6 @@ class FileTransferClient {
     }
 
     async processDeleteStatus(payload) {
-        console.log("processDeleteStatus", payload);
         const headerSize = 2;
 
         if (payload.byteLength < headerSize) {
@@ -435,7 +421,6 @@ class FileTransferClient {
     }
     
     async processMoveStatus(payload) {
-        console.log("processMoveStatus", payload);
         const headerSize = 2;
 
         if (payload.byteLength < headerSize) {
@@ -466,7 +451,6 @@ class FileTransferClient {
         if (modificationTime === undefined) {
             modificationTime = Date.now()
         }
-        console.log("delete", path);
         let encoded = new TextEncoder().encode(path);
         var header = new ArrayBuffer(16);
         var view = new DataView(header);
@@ -475,17 +459,13 @@ class FileTransferClient {
         view.setUint16(2, encoded.byteLength, true);
         // Offsets 4-7 Reserved
         view.setBigUint64(8, BigInt(modificationTime * 1000000), true);
-        console.log("write header", header, encoded);
         await this._write(header);
         await this._write(encoded);
 
-        console.log("wrote makeDir");
         let p = new Promise((resolve, reject) => {
-            console.log("start makeDir");
             this._resolve = resolve;
             this._reject = reject;
         });
-        console.log("makeDir return");
         return p;
     }
 
@@ -495,49 +475,38 @@ class FileTransferClient {
 
         this._incomingOffset = 0;
 
-        console.log("list", path);
         let encoded = new TextEncoder().encode(path);
         var header = new ArrayBuffer(4);
         var view = new DataView(header);
         view.setUint8(0, LISTDIR_COMMAND);
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
-        console.log("write header", header, encoded);
         await this._write(header);
         await this._write(encoded);
 
-        console.log("wrote listDir");
         let p = new Promise((resolve, reject) => {
-            console.log("start listDir");
             this._resolve = resolve;
             this._reject = reject;
         });
-        console.log("listDir return");
         return p;
     }
 
     // Deletes the file or directory at the given path. Directories must be empty.
     async delete(path) {
         await this.checkConnection();
-
-        console.log("delete", path);
         let encoded = new TextEncoder().encode(path);
         var header = new ArrayBuffer(4);
         var view = new DataView(header);
         view.setUint8(0, DELETE_COMMAND);
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
-        console.log("write header", header, encoded);
         await this._write(header);
         await this._write(encoded);
 
-        console.log("wrote delete");
         let p = new Promise((resolve, reject) => {
-            console.log("start delete");
             this._resolve = resolve;
             this._reject = reject;
         });
-        console.log("delete return");
         return p;
     }
 
@@ -545,7 +514,6 @@ class FileTransferClient {
     async move(oldPath, newPath) {
         await this.checkConnection();
 
-        console.log("move", oldPath, newPath);
         let encodedOldPath = new TextEncoder().encode(oldPath);
         let encodedNewPath = new TextEncoder().encode(newPath);
         
@@ -555,19 +523,15 @@ class FileTransferClient {
         // Offset 1 is reserved
         view.setUint16(2, encodedOldPath.byteLength, true);
         view.setUint16(4, encodedNewPath.byteLength, true);
-        console.log("write header", header, encodedOldPath, encodedNewPath);
         await this._write(header);
         await this._write(encodedOldPath);
         await this._write(new TextEncoder().encode(" "));
         await this._write(encodedNewPath);
 
-        console.log("wrote move");
         let p = new Promise((resolve, reject) => {
-            console.log("start move");
             this._resolve = resolve;
             this._reject = reject;
         });
-        console.log("move return");
         return p;
     }
 }
