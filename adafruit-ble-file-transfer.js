@@ -62,18 +62,23 @@ class FileTransferClient {
             //connection ok
             return;
         }
-        //check connection
-        let service = await this._device.gatt.getPrimaryService(0xfebb);
-        const versionChar = await service.getCharacteristic(bleFileCharVersionUUID);
-        let version = (await versionChar.readValue()).getUint32(0, true);
-        if (version != 4) {
-            return Promise.reject("Unsupported version: " + version);
+        try {
+            //check connection
+            let service = await this._device.gatt.getPrimaryService(0xfebb);
+            const versionChar = await service.getCharacteristic(bleFileCharVersionUUID);
+            let version = (await versionChar.readValue()).getUint32(0, true);
+            if (version != 4) {
+                return Promise.reject("Unsupported version: " + version);
+            }
+            //version ok
+            this._transfer = await service.getCharacteristic(bleFileCharTransferUUID);
+            this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotifty);
+            this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotifty);
+            await this._transfer.startNotifications();
+        } catch(e) {
+            console.log("caught connection error", e, e.stack);
+            this.onDisconnected();
         }
-        //version ok
-        this._transfer = await service.getCharacteristic(bleFileCharTransferUUID);
-        this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotifty);
-        this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotifty);
-        await this._transfer.startNotifications();
     }
 
     async _write(value) {
