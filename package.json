@@ -3,7 +3,7 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "version": "0.9.1",
+  "version": "1.0.0",
   "description": "WebBluetooth library for transferring files over BLE",
   "main": "adafruit-ble-file-transfer.js",
   "dependencies": {
