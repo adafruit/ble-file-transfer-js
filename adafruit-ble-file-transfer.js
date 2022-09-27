@@ -29,7 +29,7 @@ const FLAG_DIRECTORY = 0x01;
 const BYTES_PER_WRITE = 20;
 
 class FileTransferClient {
-    constructor(bleDevice, bufferSize=4096) {
+    constructor(bleDevice, bufferSize = 4096) {
         this._resolve = null;
         this._reject = null;
         this._command = ANY_COMMAND;
@@ -38,6 +38,7 @@ class FileTransferClient {
         this._buffer = new Uint8Array(bufferSize);
         this._transfer = null;
         this._device = bleDevice;
+        this._raw = false;
         bleDevice.addEventListener("gattserverdisconnected", this.onDisconnected.bind(this));
         this._onTransferNotifty = this.onTransferNotifty.bind(this);
     }
@@ -75,7 +76,7 @@ class FileTransferClient {
             this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotifty);
             this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotifty);
             await this._transfer.startNotifications();
-        } catch(e) {
+        } catch (e) {
             console.log("caught connection error", e, e.stack);
             this.onDisconnected();
         }
@@ -108,34 +109,35 @@ class FileTransferClient {
     }
 
     async onTransferNotifty(event) {
-      this._buffer.set(new Uint8Array(event.target.value.buffer), this._offset);
-      this._command = this._buffer[0];
-      this._offset += event.target.value.byteLength;
-      if (this._command == READ_DATA) {
-          this._command = await this.processReadData(new DataView(this._buffer.buffer, 0, this._offset));
-      } else if (this._command == WRITE_PACING) {
-          this._command = await this.processWritePacing(new DataView(this._buffer.buffer, 0, this._offset));
-      } else if (this._command == LISTDIR_ENTRY) {
-          this._command = await this.processListDirEntry(new DataView(this._buffer.buffer, 0, this._offset));
-      } else if (this._command == MKDIR_STATUS) {
-          this._command = await this.processMkDirStatus(new DataView(this._buffer.buffer, 0, this._offset));      
-      } else if (this._command == DELETE_STATUS) {
-          this._command = await this.processDeleteStatus(new DataView(this._buffer.buffer, 0, this._offset));                  
-      } else if (this._command == MOVE_STATUS) {
-          this._command = await this.processMoveStatus(new DataView(this._buffer.buffer, 0, this._offset));                  
-      } else {
-          console.log("Unknown Command: " + this._command);
-      }
-      if (this._command != THIS_COMMAND) {
-          //reset buffer
-          this._offset = 0;
-      }
+        this._buffer.set(new Uint8Array(event.target.value.buffer), this._offset);
+        this._command = this._buffer[0];
+        this._offset += event.target.value.byteLength;
+        if (this._command == READ_DATA) {
+            this._command = await this.processReadData(new DataView(this._buffer.buffer, 0, this._offset));
+        } else if (this._command == WRITE_PACING) {
+            this._command = await this.processWritePacing(new DataView(this._buffer.buffer, 0, this._offset));
+        } else if (this._command == LISTDIR_ENTRY) {
+            this._command = await this.processListDirEntry(new DataView(this._buffer.buffer, 0, this._offset));
+        } else if (this._command == MKDIR_STATUS) {
+            this._command = await this.processMkDirStatus(new DataView(this._buffer.buffer, 0, this._offset));
+        } else if (this._command == DELETE_STATUS) {
+            this._command = await this.processDeleteStatus(new DataView(this._buffer.buffer, 0, this._offset));
+        } else if (this._command == MOVE_STATUS) {
+            this._command = await this.processMoveStatus(new DataView(this._buffer.buffer, 0, this._offset));
+        } else {
+            console.log("Unknown Command: " + this._command);
+        }
+        if (this._command != THIS_COMMAND) {
+            //reset buffer
+            this._offset = 0;
+        }
     }
 
-    async readFile(filename) {
+    async readFile(filename, raw = false) {
         await this.checkConnection();
         this._incomingFile = null;
         this._incomingOffset = 0;
+        this._raw = raw;
 
         var header = new ArrayBuffer(12);
         var view = new DataView(header);
@@ -157,7 +159,18 @@ class FileTransferClient {
         return p;
     }
 
-    async writeFile(path, offset, contents, modificationTime) {
+    async writeFile(path, offset, contents, modificationTime, raw = false) {
+        let encoder = new TextEncoder();
+
+        if (!raw) {
+            let same = contents.slice(0, offset);
+            let different = contents.slice(offset);
+            offset = encoder.encode(same).byteLength;
+            contents = encoder.encode(different);
+        } else if (!(contents instanceof Uint8Array)) {
+            contents = new Uint8Array(contents);
+        }
+
         await this.checkConnection();
         if (modificationTime === undefined) {
             modificationTime = Date.now();
@@ -186,7 +199,7 @@ class FileTransferClient {
     }
 
     sleep(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms))
+        return new Promise(resolve => setTimeout(resolve, ms));
     }
 
     async processWritePacing(payload) {
@@ -207,10 +220,10 @@ class FileTransferClient {
             return ANY_COMMAND;
         }
         if (freeSpace == 0) {
-          this._resolve();
-          this._reject = null;
-          this._resolve = null;
-          return ANY_COMMAND;
+            this._resolve();
+            this._reject = null;
+            this._resolve = null;
+            return ANY_COMMAND;
         }
         var header = new ArrayBuffer(12);
         var view = new DataView(header);
@@ -247,19 +260,23 @@ class FileTransferClient {
             return ANY_COMMAND;
         }
         if (payload.byteLength < headerSize + chunkLength) {
-          // need more
-          return THIS_COMMAND;
+            // need more
+            return THIS_COMMAND;
         }
         // full payload
         if (this._incomingFile == null) {
-          this._incomingFile = new Uint8Array(totalLength);
+            this._incomingFile = new Uint8Array(totalLength);
         }
         this._incomingFile.set(new Uint8Array(payload.buffer.slice(headerSize, payload.byteLength)), chunkOffset);
         this._incomingOffset += chunkLength;
 
         let remaining = this._incomingFile.byteLength - this._incomingOffset;
         if (remaining == 0) {
-            this._resolve(new TextDecoder().decode(this._incomingFile));
+            if (this._raw) {
+                this._resolve(new Blob([this._incomingFile]));
+            } else {
+                this._resolve(new TextDecoder().decode(this._incomingFile));
+            }
             this._resolve = null;
             this._reject = null;
             this._incomingFile = null;
@@ -277,7 +294,7 @@ class FileTransferClient {
         return READ_DATA;
     }
 
-    async processListDirEntry(payload, offset=0) {
+    async processListDirEntry(payload, offset = 0) {
         let paths = [];
         let b = this._buffer.buffer;
         const headerSize = 28;
@@ -406,14 +423,14 @@ class FileTransferClient {
         this._reject = null;
         return ANY_COMMAND;
     }
-    
+
     async processMoveStatus(payload) {
         const headerSize = 2;
 
         if (payload.byteLength < headerSize) {
             return THIS_COMMAND;
         }
-        
+
         let status = payload.getUint8(1);
         if (status != STATUS_OK) {
             if (status == STATUS_ERROR_USB_MOUNTED) {
@@ -499,7 +516,7 @@ class FileTransferClient {
 
         let encodedOldPath = new TextEncoder().encode(oldPath);
         let encodedNewPath = new TextEncoder().encode(newPath);
-        
+
         var header = new ArrayBuffer(6);
         var view = new DataView(header);
         view.setUint8(0, MOVE_COMMAND);
@@ -532,4 +549,4 @@ class ValueError extends Error {
     }
 }
 
-export { FileTransferClient, ProtocolError, ValueError };
+export {FileTransferClient, ProtocolError, ValueError};
