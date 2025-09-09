@@ -40,7 +40,7 @@ class FileTransferClient {
         this._device = bleDevice;
         this._raw = false;
         bleDevice.addEventListener("gattserverdisconnected", this.onDisconnected.bind(this));
-        this._onTransferNotifty = this.onTransferNotifty.bind(this);
+        this._onTransferNotify = this.onTransferNotify.bind(this);
     }
 
     async onDisconnected() {
@@ -73,8 +73,8 @@ class FileTransferClient {
             }
             //version ok
             this._transfer = await service.getCharacteristic(bleFileCharTransferUUID);
-            this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotifty);
-            this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotifty);
+            this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotify);
+            this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotify);
             await this._transfer.startNotifications();
         } catch (e) {
             console.log("caught connection error", e, e.stack);
@@ -108,7 +108,7 @@ class FileTransferClient {
         //bonded internally
     }
 
-    async onTransferNotifty(event) {
+    async onTransferNotify(event) {
         this._buffer.set(new Uint8Array(event.target.value.buffer), this._offset);
         this._command = this._buffer[0];
         this._offset += event.target.value.byteLength;
