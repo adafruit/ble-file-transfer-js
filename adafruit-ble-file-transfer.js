@@ -20,7 +20,7 @@ const MOVE_STATUS = 0x61;
 
 const STATUS_OK = 0x01;
 const STATUS_ERROR = 0x02;
-const STATUS_ERROR_USB_MOUNTED = 0x05;
+const STATUS_ERROR_READONLY = 0x05;
 
 // Flags
 const FLAG_DIRECTORY = 0x01;
@@ -208,8 +208,8 @@ class FileTransferClient {
         let chunkOffset = payload.getUint32(4, true);
         let freeSpace = payload.getUint32(16, true);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_USB_MOUNTED) {
-                this._reject("Unable to write while USB connected");
+            if (status == STATUS_ERROR_READONLY) {
+                this._reject("Filesystem is read-only");
             } else if (status == STATUS_ERROR) {
                 this._reject("Invalid Path");
             } else {
@@ -246,8 +246,8 @@ class FileTransferClient {
         let totalLength = payload.getUint32(8, true);
         let chunkLength = payload.getUint32(12, true);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_USB_MOUNTED) {
-                this._reject("Unable to read while USB connected");
+            if (status == STATUS_ERROR_READONLY) {
+                this._reject("Filesystem is read-only");
             } else if (status == STATUS_ERROR) {
                 this._reject("Invalid Path");
             } else {
@@ -305,8 +305,8 @@ class FileTransferClient {
         let i = payload.getUint32(4, true);
         let totalItems = payload.getUint32(8, true);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_USB_MOUNTED) {
-                this._reject("Unable to read while USB connected");
+            if (status == STATUS_ERROR_READONLY) {
+                this._reject("Filesystem is read-only");
             } else if (status == STATUS_ERROR) {
                 this._reject("Invalid Path");
             } else {
@@ -383,8 +383,8 @@ class FileTransferClient {
         }
 
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_USB_MOUNTED) {
-                this._reject("Unable to write while USB connected");
+            if (status == STATUS_ERROR_READONLY) {
+                this._reject("Filesystem is read-only");
             } else if (status == STATUS_ERROR) {
                 this._reject("Invalid Path");
             } else {
@@ -408,8 +408,8 @@ class FileTransferClient {
 
         let status = payload.getUint8(1);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_USB_MOUNTED) {
-                this._reject("Unable to write while USB connected");
+            if (status == STATUS_ERROR_READONLY) {
+                this._reject("Filesystem is read-only");
             } else if (status == STATUS_ERROR) {
                 this._reject("File or Folder not found");
             } else {
@@ -433,8 +433,8 @@ class FileTransferClient {
 
         let status = payload.getUint8(1);
         if (status != STATUS_OK) {
-            if (status == STATUS_ERROR_USB_MOUNTED) {
-                this._reject("Unable to write while USB connected");
+            if (status == STATUS_ERROR_READONLY) {
+                this._reject("Filesystem is read-only");
             } else if (status == STATUS_ERROR) {
                 this._reject("Unable to move file");
             } else {
