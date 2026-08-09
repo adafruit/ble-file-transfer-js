@@ -79,7 +79,25 @@ class FileTransferClient {
         } catch (e) {
             console.log("caught connection error", e, e.stack);
             this.onDisconnected();
+            // Rethrow. Returning normally here leaves _transfer null and lets
+            // the caller go on to write a request that cannot be sent.
+            throw e;
         }
+    }
+
+    // Install the promise that the response notification will settle.
+    //
+    // This must happen BEFORE the request is written. _write() reports a failed
+    // write by calling onDisconnected(), which can only reject if _reject is
+    // already set; otherwise the failure is swallowed and the promise returned
+    // to the caller is never settled by anyone. It also closes a race where a
+    // device that answers immediately could deliver its notification before
+    // _resolve existed.
+    _pendingResponse() {
+        return new Promise((resolve, reject) => {
+            this._resolve = resolve;
+            this._reject = reject;
+        });
     }
 
     async _write(value) {
@@ -147,14 +165,9 @@ class FileTransferClient {
         view.setUint16(2, encoded.byteLength, true);
         view.setUint32(4, 0, true);
         view.setUint32(8, this._buffer.byteLength - 16, true);
+        let p = this._pendingResponse();
         await this._write(header);
         await this._write(encoded);
-        //wrote read
-        let p = new Promise((resolve, reject) => {
-            //start read
-            this._resolve = resolve;
-            this._reject = reject;
-        });
         //read return
         return p;
     }
@@ -184,16 +197,13 @@ class FileTransferClient {
         view.setUint32(4, offset, true);
         view.setBigUint64(8, BigInt(modificationTime * 1000000), true);
         view.setUint32(16, offset + contents.byteLength, true);
-        await this._write(header);
-        await this._write(encoded);
+        // Set before writing: processWritePacing() reads these, and the first
+        // pacing notification can arrive as soon as the header is out.
         this._outgoingContents = contents;
         this._outgoingOffset = offset;
-        //wrote write
-        let p = new Promise((resolve, reject) => {
-            //start write
-            this._resolve = resolve;
-            this._reject = reject;
-        });
+        let p = this._pendingResponse();
+        await this._write(header);
+        await this._write(encoded);
         //write return
         return p;
     }
@@ -462,13 +472,9 @@ class FileTransferClient {
         view.setUint16(2, encoded.byteLength, true);
         // Offsets 4-7 Reserved
         view.setBigUint64(8, BigInt(modificationTime * 1000000), true);
+        let p = this._pendingResponse();
         await this._write(header);
         await this._write(encoded);
-
-        let p = new Promise((resolve, reject) => {
-            this._resolve = resolve;
-            this._reject = reject;
-        });
         return p;
     }
 
@@ -481,13 +487,9 @@ class FileTransferClient {
         view.setUint8(0, LISTDIR_COMMAND);
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
+        let p = this._pendingResponse();
         await this._write(header);
         await this._write(encoded);
-
-        let p = new Promise((resolve, reject) => {
-            this._resolve = resolve;
-            this._reject = reject;
-        });
         return p;
     }
 
@@ -500,13 +502,9 @@ class FileTransferClient {
         view.setUint8(0, DELETE_COMMAND);
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
+        let p = this._pendingResponse();
         await this._write(header);
         await this._write(encoded);
-
-        let p = new Promise((resolve, reject) => {
-            this._resolve = resolve;
-            this._reject = reject;
-        });
         return p;
     }
 
@@ -523,15 +521,11 @@ class FileTransferClient {
         // Offset 1 is reserved
         view.setUint16(2, encodedOldPath.byteLength, true);
         view.setUint16(4, encodedNewPath.byteLength, true);
+        let p = this._pendingResponse();
         await this._write(header);
         await this._write(encodedOldPath);
         await this._write(new TextEncoder().encode(" "));
         await this._write(encodedNewPath);
-
-        let p = new Promise((resolve, reject) => {
-            this._resolve = resolve;
-            this._reject = reject;
-        });
         return p;
     }
 }
