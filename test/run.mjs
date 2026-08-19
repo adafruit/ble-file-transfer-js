@@ -22,6 +22,7 @@ const unknownCommands = [];
 // The client reports desynchronised reassembly by logging an unparseable
 // opcode. Capture that rather than letting it scroll past.
 const discarded = [];
+const writeErrors = [];
 const realLog = console.log;
 console.log = (...args) => {
     const first = String(args[0]);
@@ -31,6 +32,10 @@ console.log = (...args) => {
     }
     if (first.startsWith("Discarding unexpected notification")) {
         discarded.push(first);
+        return;
+    }
+    if (first.startsWith("caught write error")) {
+        writeErrors.push(String(args[1]));
         return;
     }
     realLog(...args);
@@ -51,6 +56,7 @@ process.on("unhandledRejection", (e) => {
 async function test(name, fn) {
     unknownCommands.length = 0;
     discarded.length = 0;
+    writeErrors.length = 0;
     asyncErrors.length = 0;
     currentTest = name;
     try {
@@ -244,6 +250,40 @@ await test("a notification with no command pending is discarded", async () => {
     const entries = await withTimeout(client.listDir("/"), 2000, "root after strays");
     assertEqual(sortedNames(entries), ["code.py"], "root listing after strays");
     assertEqual(discarded.length, 2, "stray notifications discarded");
+});
+
+await test("a failed write abandons the rest of the request", async () => {
+    const fs = fsWith([], {"/code.py": "x"});
+    const {ble, client} = connect(fs, 244, GROUPINGS.greedy());
+    await withTimeout(client.listDir("/"), 2000, "root");
+
+    // Fail one write on a link that stays up, the way a transient GATT error
+    // looks. listDir() writes a header and then the path.
+    let failuresLeft = 1;
+    const realWrite = ble.transferChar.writeValueWithoutResponse.bind(ble.transferChar);
+    ble.transferChar.writeValueWithoutResponse = async (value) => {
+        if (failuresLeft > 0) {
+            failuresLeft--;
+            throw new Error("GATT operation failed for unknown reason");
+        }
+        return realWrite(value);
+    };
+
+    let rejection = null;
+    try {
+        await withTimeout(client.listDir("/"), 2000, "listDir with a failed write");
+    } catch (e) {
+        rejection = String((e && e.message) || e);
+    }
+    assertEqual(rejection, "disconnected", "listDir rejects");
+    // Swallowing the failure let the caller write the path anyway, against a
+    // _transfer that onDisconnected() had just nulled, so a second and
+    // completely misleading error was logged.
+    assertEqual(writeErrors, ["Error: GATT operation failed for unknown reason"], "errors logged");
+
+    ble.transferChar.writeValueWithoutResponse = realWrite;
+    const entries = await withTimeout(client.listDir("/"), 2000, "root after the failure");
+    assertEqual(sortedNames(entries), ["code.py"], "root listing after the failure");
 });
 
 // --- Whole-session behaviour -----------------------------------------------

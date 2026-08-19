@@ -118,6 +118,29 @@ class FileTransferClient {
         } catch (e) {
             console.log("caught write error", e, e.stack);
             this.onDisconnected();
+            // Rethrow. Swallowing it let the caller go on to write the rest of
+            // the request against a now-null _transfer, which threw a second,
+            // misleading error.
+            throw e;
+        }
+    }
+
+    // Write the parts of one request, stopping at the first failure.
+    //
+    // A failed write has already rejected the pending response via
+    // onDisconnected(), so there is nothing to report here; returning the
+    // rejection as well would leave that promise unhandled. Sending the
+    // remaining parts of a request known to be broken only makes things worse:
+    // the device stays in THIS_COMMAND holding the part that did arrive, and
+    // prepends it to whatever request comes next.
+    async _writeRequest(...parts) {
+        try {
+            for (let part of parts) {
+                await this._write(part);
+            }
+            return true;
+        } catch (e) {
+            return false;
         }
     }
 
@@ -176,8 +199,7 @@ class FileTransferClient {
         view.setUint32(4, 0, true);
         view.setUint32(8, this._buffer.byteLength - 16, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         //read return
         return p;
     }
@@ -212,8 +234,7 @@ class FileTransferClient {
         this._outgoingContents = contents;
         this._outgoingOffset = offset;
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         //write return
         return p;
     }
@@ -253,9 +274,10 @@ class FileTransferClient {
         view.setUint32(4, chunkOffset, true);
         let remaining = Math.min(this._outgoingOffset + this._outgoingContents.byteLength - chunkOffset, freeSpace);
         view.setUint32(8, remaining, true);
-        await this._write(header);
         let baseOffset = chunkOffset - this._outgoingOffset;
-        await this._write(this._outgoingContents.subarray(baseOffset, baseOffset + remaining));
+        if (!await this._writeRequest(header, this._outgoingContents.subarray(baseOffset, baseOffset + remaining))) {
+            return ANY_COMMAND;
+        }
         return WRITE_PACING;
     }
 
@@ -310,7 +332,9 @@ class FileTransferClient {
         // Offsets 2 and 3 are reserved
         view.setUint32(4, this._incomingOffset, true);
         view.setUint32(8, Math.min(this._buffer.byteLength - 12, remaining), true);
-        await this._write(header);
+        if (!await this._writeRequest(header)) {
+            return ANY_COMMAND;
+        }
         return READ_DATA;
     }
 
@@ -495,8 +519,7 @@ class FileTransferClient {
         // Offsets 4-7 Reserved
         view.setBigUint64(8, BigInt(modificationTime * 1000000), true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         return p;
     }
 
@@ -510,8 +533,7 @@ class FileTransferClient {
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         return p;
     }
 
@@ -525,8 +547,7 @@ class FileTransferClient {
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         return p;
     }
 
@@ -544,10 +565,7 @@ class FileTransferClient {
         view.setUint16(2, encodedOldPath.byteLength, true);
         view.setUint16(4, encodedNewPath.byteLength, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encodedOldPath);
-        await this._write(new TextEncoder().encode(" "));
-        await this._write(encodedNewPath);
+        await this._writeRequest(header, encodedOldPath, new TextEncoder().encode(" "), encodedNewPath);
         return p;
     }
 }
