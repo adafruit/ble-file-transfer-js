@@ -6,6 +6,7 @@
   "version": "1.1.0",
   "description": "WebBluetooth library for transferring files over BLE",
   "main": "adafruit-ble-file-transfer.js",
+  "type": "module",
   "files": [
     "adafruit-ble-file-transfer.js"
   ],
