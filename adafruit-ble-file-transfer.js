@@ -118,6 +118,29 @@ class FileTransferClient {
         } catch (e) {
             console.log("caught write error", e, e.stack);
             this.onDisconnected();
+            // Rethrow. Swallowing it let the caller go on to write the rest of
+            // the request against a now-null _transfer, which threw a second,
+            // misleading error.
+            throw e;
+        }
+    }
+
+    // Write the parts of one request, stopping at the first failure.
+    //
+    // A failed write has already rejected the pending response via
+    // onDisconnected(), so there is nothing to report here; returning the
+    // rejection as well would leave that promise unhandled. Sending the
+    // remaining parts of a request known to be broken only makes things worse:
+    // the device stays in THIS_COMMAND holding the part that did arrive, and
+    // prepends it to whatever request comes next.
+    async _writeRequest(...parts) {
+        try {
+            for (let part of parts) {
+                await this._write(part);
+            }
+            return true;
+        } catch (e) {
+            return false;
         }
     }
 
@@ -127,6 +150,16 @@ class FileTransferClient {
     }
 
     async onTransferNotify(event) {
+        if (this._resolve == null) {
+            // No command is waiting for this. Parsing it would call a null
+            // _resolve or _reject and throw out of the event handler, and
+            // keeping the bytes would prepend them to the next command's
+            // response. Drop it, but say so: a stray notification means the
+            // device and this client disagree about where a response ended.
+            console.log("Discarding unexpected notification of " + event.target.value.byteLength + " bytes");
+            this._offset = 0;
+            return;
+        }
         this._buffer.set(new Uint8Array(event.target.value.buffer), this._offset);
         this._command = this._buffer[0];
         this._offset += event.target.value.byteLength;
@@ -166,8 +199,7 @@ class FileTransferClient {
         view.setUint32(4, 0, true);
         view.setUint32(8, this._buffer.byteLength - 16, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         //read return
         return p;
     }
@@ -202,8 +234,7 @@ class FileTransferClient {
         this._outgoingContents = contents;
         this._outgoingOffset = offset;
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         //write return
         return p;
     }
@@ -243,9 +274,10 @@ class FileTransferClient {
         view.setUint32(4, chunkOffset, true);
         let remaining = Math.min(this._outgoingOffset + this._outgoingContents.byteLength - chunkOffset, freeSpace);
         view.setUint32(8, remaining, true);
-        await this._write(header);
         let baseOffset = chunkOffset - this._outgoingOffset;
-        await this._write(this._outgoingContents.subarray(baseOffset, baseOffset + remaining));
+        if (!await this._writeRequest(header, this._outgoingContents.subarray(baseOffset, baseOffset + remaining))) {
+            return ANY_COMMAND;
+        }
         return WRITE_PACING;
     }
 
@@ -300,20 +332,25 @@ class FileTransferClient {
         // Offsets 2 and 3 are reserved
         view.setUint32(4, this._incomingOffset, true);
         view.setUint32(8, Math.min(this._buffer.byteLength - 12, remaining), true);
-        await this._write(header);
+        if (!await this._writeRequest(header)) {
+            return ANY_COMMAND;
+        }
         return READ_DATA;
     }
 
-    async processListDirEntry(payload, offset = 0) {
-        let paths = [];
-        let b = this._buffer.buffer;
+    async processListDirEntry(payload) {
         const headerSize = 28;
-        let cmd, path;
-        let flags, modificationTime, fileSize;
+        // The device splits an entry header into 16 + 12 byte writes when it
+        // does not fit in a single packet, so nothing in the header can be
+        // trusted -- not even the status byte -- until all of it has arrived.
+        // Deciding anything sooner resolves the command while the rest of the
+        // header is still in flight, and those bytes are then parsed as the
+        // start of the next response.
+        if (payload.byteLength < headerSize) {
+            return THIS_COMMAND;
+        }
+
         let status = payload.getUint8(1);
-        let pathLength = payload.getUint16(2, true);
-        let i = payload.getUint32(4, true);
-        let totalItems = payload.getUint32(8, true);
         if (status != STATUS_OK) {
             if (status == STATUS_ERROR_READONLY) {
                 this._reject("Filesystem is read-only");
@@ -327,45 +364,57 @@ class FileTransferClient {
             return ANY_COMMAND;
         }
 
-        // Figure out if complete
-        offset = 0;
-        while (offset < payload.byteLength) {
-            if (offset + headerSize + pathLength > payload.byteLength) {
+        // Figure out if complete. A listing ends with a terminating entry whose
+        // entry_number equals entry_count and whose path_length is zero. An
+        // empty directory sends that entry and nothing else, so the terminator
+        // is the only reliable end marker; running out of bytes is not one.
+        let offset = 0;
+        let complete = false;
+        while (offset + headerSize <= payload.byteLength) {
+            let pathLength = payload.getUint16(offset + 2, true);
+            let entryNumber = payload.getUint32(offset + 4, true);
+            let entryCount = payload.getUint32(offset + 8, true);
+            if (entryNumber >= entryCount) {
+                complete = true;
                 break;
             }
-            pathLength = payload.getUint16(offset + 2, true);
-            i = payload.getUint32(offset + 4, true);
-            totalItems = payload.getUint32(offset + 8, true);
+            if (offset + headerSize + pathLength > payload.byteLength) {
+                // This entry's name is still arriving.
+                break;
+            }
             offset += headerSize + pathLength;
         }
-
-        // Check if we have all items and all expected data for last item
-        if (i < totalItems - 1 || payload.byteLength < offset + headerSize) {
+        if (!complete) {
             // need more
             return THIS_COMMAND;
         }
 
         // full payload, now process it
+        let paths = [];
+        let b = this._buffer.buffer;
+        // Paths are UTF-8 on the wire, the same encoding this client uses when
+        // it sends one.
+        let decoder = new TextDecoder();
         offset = 0;
-        while (offset < payload.byteLength) {
-            cmd = payload.getUint8(offset + 0);
-            status = payload.getUint8(offset + 1);
-            pathLength = payload.getUint16(offset + 2, true);
-            i = payload.getUint32(offset + 4, true);
-            totalItems = payload.getUint32(offset + 8, true);
-            flags = payload.getUint32(offset + 12, true);
-            modificationTime = payload.getBigUint64(offset + 16, true);
-            fileSize = payload.getUint32(offset + 24, true);
+        while (offset + headerSize <= payload.byteLength) {
+            let cmd = payload.getUint8(offset + 0);
             if (cmd != LISTDIR_ENTRY) {
-                throw new ProtocolError();
+                this._reject(new ProtocolError("Expected LISTDIR_ENTRY, got 0x" + cmd.toString(16)));
+                this._resolve = null;
+                this._reject = null;
+                return ANY_COMMAND;
             }
-            if (i >= totalItems) {
+            let pathLength = payload.getUint16(offset + 2, true);
+            let entryNumber = payload.getUint32(offset + 4, true);
+            let entryCount = payload.getUint32(offset + 8, true);
+            if (entryNumber >= entryCount) {
+                // The terminating entry carries no path.
                 break;
             }
-            if (offset + headerSize + pathLength > payload.byteLength) {
-                break;
-            }
-            path = String.fromCharCode.apply(null, new Uint8Array(b.slice(offset + headerSize, offset + headerSize + pathLength)));
+            let flags = payload.getUint32(offset + 12, true);
+            let modificationTime = payload.getBigUint64(offset + 16, true);
+            let fileSize = payload.getUint32(offset + 24, true);
+            let path = decoder.decode(new Uint8Array(b, offset + headerSize, pathLength));
             paths.push({
                 path: path,
                 isDir: !!(flags & FLAG_DIRECTORY),
@@ -373,9 +422,6 @@ class FileTransferClient {
                 fileDate: Number(modificationTime / BigInt(1000000)),
             });
             offset += headerSize + pathLength;
-            if (status != STATUS_OK) {
-                break;
-            }
         }
 
         this._resolve(paths);
@@ -473,8 +519,7 @@ class FileTransferClient {
         // Offsets 4-7 Reserved
         view.setBigUint64(8, BigInt(modificationTime * 1000000), true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         return p;
     }
 
@@ -488,8 +533,7 @@ class FileTransferClient {
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         return p;
     }
 
@@ -503,8 +547,7 @@ class FileTransferClient {
         // Offset 1 is reserved
         view.setUint16(2, encoded.byteLength, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encoded);
+        await this._writeRequest(header, encoded);
         return p;
     }
 
@@ -522,10 +565,7 @@ class FileTransferClient {
         view.setUint16(2, encodedOldPath.byteLength, true);
         view.setUint16(4, encodedNewPath.byteLength, true);
         let p = this._pendingResponse();
-        await this._write(header);
-        await this._write(encodedOldPath);
-        await this._write(new TextEncoder().encode(" "));
-        await this._write(encodedNewPath);
+        await this._writeRequest(header, encodedOldPath, new TextEncoder().encode(" "), encodedNewPath);
         return p;
     }
 }
