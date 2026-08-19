@@ -190,6 +190,15 @@ for (const size of PACKET_SIZES) {
     });
 }
 
+await test("non-ASCII filenames decode as UTF-8", async () => {
+    // Filenames go out in 4 byte writes, so a multi-byte character can land
+    // across two notifications. They are only decodable once reassembled.
+    const fs = fsWith([], {"/caf\u00e9.py": "x", "/\u65e5\u672c\u8a9e.txt": "x", "/party-\u{1f389}.txt": "x"});
+    for (const size of PACKET_SIZES) {
+        await listDirWorks(fs, "/", size, GROUPINGS.single(), `utf-8 names, packet ${size}`);
+    }
+});
+
 await test("nonexistent directory rejects without stray bytes", async () => {
     // The error entry is a full 28 byte header, split 16 + 12 at small packet
     // sizes. Rejecting after the first 16 leaves the other 12 to be parsed as

@@ -358,6 +358,9 @@ class FileTransferClient {
         // full payload, now process it
         let paths = [];
         let b = this._buffer.buffer;
+        // Paths are UTF-8 on the wire, the same encoding this client uses when
+        // it sends one.
+        let decoder = new TextDecoder();
         offset = 0;
         while (offset + headerSize <= payload.byteLength) {
             let cmd = payload.getUint8(offset + 0);
@@ -377,7 +380,7 @@ class FileTransferClient {
             let flags = payload.getUint32(offset + 12, true);
             let modificationTime = payload.getBigUint64(offset + 16, true);
             let fileSize = payload.getUint32(offset + 24, true);
-            let path = String.fromCharCode.apply(null, new Uint8Array(b.slice(offset + headerSize, offset + headerSize + pathLength)));
+            let path = decoder.decode(new Uint8Array(b, offset + headerSize, pathLength));
             paths.push({
                 path: path,
                 isDir: !!(flags & FLAG_DIRECTORY),
