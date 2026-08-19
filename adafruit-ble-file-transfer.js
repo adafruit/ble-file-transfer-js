@@ -127,6 +127,16 @@ class FileTransferClient {
     }
 
     async onTransferNotify(event) {
+        if (this._resolve == null) {
+            // No command is waiting for this. Parsing it would call a null
+            // _resolve or _reject and throw out of the event handler, and
+            // keeping the bytes would prepend them to the next command's
+            // response. Drop it, but say so: a stray notification means the
+            // device and this client disagree about where a response ended.
+            console.log("Discarding unexpected notification of " + event.target.value.byteLength + " bytes");
+            this._offset = 0;
+            return;
+        }
         this._buffer.set(new Uint8Array(event.target.value.buffer), this._offset);
         this._command = this._buffer[0];
         this._offset += event.target.value.byteLength;

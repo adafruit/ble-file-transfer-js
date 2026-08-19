@@ -21,11 +21,16 @@ const unknownCommands = [];
 
 // The client reports desynchronised reassembly by logging an unparseable
 // opcode. Capture that rather than letting it scroll past.
+const discarded = [];
 const realLog = console.log;
 console.log = (...args) => {
     const first = String(args[0]);
     if (first.startsWith("Unknown Command")) {
         unknownCommands.push(first);
+        return;
+    }
+    if (first.startsWith("Discarding unexpected notification")) {
+        discarded.push(first);
         return;
     }
     realLog(...args);
@@ -45,6 +50,7 @@ process.on("unhandledRejection", (e) => {
 
 async function test(name, fn) {
     unknownCommands.length = 0;
+    discarded.length = 0;
     asyncErrors.length = 0;
     currentTest = name;
     try {
@@ -217,6 +223,27 @@ await test("nonexistent directory rejects without stray bytes", async () => {
         const entries = await withTimeout(client.listDir("/"), 2000, "root after bad path");
         assertEqual(sortedNames(entries), ["code.py"], `packet ${size}: root listing`);
     }
+});
+
+await test("a notification with no command pending is discarded", async () => {
+    const fs = fsWith([], {"/code.py": "x"});
+    const {ble, client} = connect(fs, 244, GROUPINGS.greedy());
+    // Connect and settle a command, so the notification listener is live and
+    // nothing is pending.
+    await withTimeout(client.listDir("/"), 2000, "root");
+
+    // A late status for a command that already gave up. Handing it to
+    // processDeleteStatus() calls a null this._resolve.
+    ble._notify(Uint8Array.from([0x31, 0x01]));
+    // A fragment left over from a desync. Keeping its bytes prepends them to
+    // whatever response arrives next.
+    ble._notify(Uint8Array.from([0x51, 0x01, 0x00, 0x00]));
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert(asyncErrors.length === 0, "stray notification threw: " + asyncErrors[0]);
+    const entries = await withTimeout(client.listDir("/"), 2000, "root after strays");
+    assertEqual(sortedNames(entries), ["code.py"], "root listing after strays");
+    assertEqual(discarded.length, 2, "stray notifications discarded");
 });
 
 // --- Whole-session behaviour -----------------------------------------------
