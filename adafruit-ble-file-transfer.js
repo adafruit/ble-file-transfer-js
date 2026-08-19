@@ -304,16 +304,19 @@ class FileTransferClient {
         return READ_DATA;
     }
 
-    async processListDirEntry(payload, offset = 0) {
-        let paths = [];
-        let b = this._buffer.buffer;
+    async processListDirEntry(payload) {
         const headerSize = 28;
-        let cmd, path;
-        let flags, modificationTime, fileSize;
+        // The device splits an entry header into 16 + 12 byte writes when it
+        // does not fit in a single packet, so nothing in the header can be
+        // trusted -- not even the status byte -- until all of it has arrived.
+        // Deciding anything sooner resolves the command while the rest of the
+        // header is still in flight, and those bytes are then parsed as the
+        // start of the next response.
+        if (payload.byteLength < headerSize) {
+            return THIS_COMMAND;
+        }
+
         let status = payload.getUint8(1);
-        let pathLength = payload.getUint16(2, true);
-        let i = payload.getUint32(4, true);
-        let totalItems = payload.getUint32(8, true);
         if (status != STATUS_OK) {
             if (status == STATUS_ERROR_READONLY) {
                 this._reject("Filesystem is read-only");
@@ -327,45 +330,54 @@ class FileTransferClient {
             return ANY_COMMAND;
         }
 
-        // Figure out if complete
-        offset = 0;
-        while (offset < payload.byteLength) {
-            if (offset + headerSize + pathLength > payload.byteLength) {
+        // Figure out if complete. A listing ends with a terminating entry whose
+        // entry_number equals entry_count and whose path_length is zero. An
+        // empty directory sends that entry and nothing else, so the terminator
+        // is the only reliable end marker; running out of bytes is not one.
+        let offset = 0;
+        let complete = false;
+        while (offset + headerSize <= payload.byteLength) {
+            let pathLength = payload.getUint16(offset + 2, true);
+            let entryNumber = payload.getUint32(offset + 4, true);
+            let entryCount = payload.getUint32(offset + 8, true);
+            if (entryNumber >= entryCount) {
+                complete = true;
                 break;
             }
-            pathLength = payload.getUint16(offset + 2, true);
-            i = payload.getUint32(offset + 4, true);
-            totalItems = payload.getUint32(offset + 8, true);
+            if (offset + headerSize + pathLength > payload.byteLength) {
+                // This entry's name is still arriving.
+                break;
+            }
             offset += headerSize + pathLength;
         }
-
-        // Check if we have all items and all expected data for last item
-        if (i < totalItems - 1 || payload.byteLength < offset + headerSize) {
+        if (!complete) {
             // need more
             return THIS_COMMAND;
         }
 
         // full payload, now process it
+        let paths = [];
+        let b = this._buffer.buffer;
         offset = 0;
-        while (offset < payload.byteLength) {
-            cmd = payload.getUint8(offset + 0);
-            status = payload.getUint8(offset + 1);
-            pathLength = payload.getUint16(offset + 2, true);
-            i = payload.getUint32(offset + 4, true);
-            totalItems = payload.getUint32(offset + 8, true);
-            flags = payload.getUint32(offset + 12, true);
-            modificationTime = payload.getBigUint64(offset + 16, true);
-            fileSize = payload.getUint32(offset + 24, true);
+        while (offset + headerSize <= payload.byteLength) {
+            let cmd = payload.getUint8(offset + 0);
             if (cmd != LISTDIR_ENTRY) {
-                throw new ProtocolError();
+                this._reject(new ProtocolError("Expected LISTDIR_ENTRY, got 0x" + cmd.toString(16)));
+                this._resolve = null;
+                this._reject = null;
+                return ANY_COMMAND;
             }
-            if (i >= totalItems) {
+            let pathLength = payload.getUint16(offset + 2, true);
+            let entryNumber = payload.getUint32(offset + 4, true);
+            let entryCount = payload.getUint32(offset + 8, true);
+            if (entryNumber >= entryCount) {
+                // The terminating entry carries no path.
                 break;
             }
-            if (offset + headerSize + pathLength > payload.byteLength) {
-                break;
-            }
-            path = String.fromCharCode.apply(null, new Uint8Array(b.slice(offset + headerSize, offset + headerSize + pathLength)));
+            let flags = payload.getUint32(offset + 12, true);
+            let modificationTime = payload.getBigUint64(offset + 16, true);
+            let fileSize = payload.getUint32(offset + 24, true);
+            let path = String.fromCharCode.apply(null, new Uint8Array(b.slice(offset + headerSize, offset + headerSize + pathLength)));
             paths.push({
                 path: path,
                 isDir: !!(flags & FLAG_DIRECTORY),
@@ -373,9 +385,6 @@ class FileTransferClient {
                 fileDate: Number(modificationTime / BigInt(1000000)),
             });
             offset += headerSize + pathLength;
-            if (status != STATUS_OK) {
-                break;
-            }
         }
 
         this._resolve(paths);
