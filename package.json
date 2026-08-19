@@ -1,5 +1,5 @@
 {
-  "name": "@adafruit/ble-file-transfer",
+  "name": "@adafruit/ble-file-transfer-js",
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
