@@ -73,8 +73,38 @@ class FileTransferClient {
             }
             //version ok
             this._transfer = await service.getCharacteristic(bleFileCharTransferUUID);
+
+            // Read the transfer characteristic before subscribing. The characteristic
+            // requires encryption, so this read is what triggers pairing.
+            //
+            // Pairing at the subscribe instead is not reliable. Espressif firmware
+            // before adafruit/circuitpython#11236 leaves the CCCD writable without
+            // encryption, so nothing ever demands pairing, and every request afterwards
+            // is silently dropped (Write Commands have no error response). And on
+            // Windows, pairing during the subscribe makes Chrome deliver each response
+            // twice.
+            try {
+                await this._transfer.readValue();
+            } catch (e) {
+                // Not fatal on its own. If the link is genuinely unusable the
+                // subscribe below reports it.
+                console.log("read before subscribing failed", e);
+            }
+
             this._transfer.removeEventListener('characteristicvaluechanged', this._onTransferNotify);
             this._transfer.addEventListener('characteristicvaluechanged', this._onTransferNotify);
+
+            // Stop notifications before starting, so a CCCD write actually goes out.
+            // On reconnect to a bonded peripheral, startNotifications() alone can skip the write,
+            // and then no notification ever reaches the handler even though reads work.
+            //
+            // This must follow the read above: if the stop fails on an unencrypted
+            // link, responses can arrive doubled. Pairing first keeps it from failing.
+            try {
+                await this._transfer.stopNotifications();
+            } catch (e) {
+                // Nothing was subscribed yet, which is the ordinary first connect.
+            }
             await this._transfer.startNotifications();
         } catch (e) {
             console.log("caught connection error", e, e.stack);
@@ -150,6 +180,26 @@ class FileTransferClient {
     }
 
     async onTransferNotify(event) {
+        // Nothing may escape this handler. It runs from a DOM event, so a throw goes
+        // nowhere a caller can see it, and the pending response promise is left
+        // unsettled -- the caller waits forever. Report it as a rejection instead.
+        try {
+            await this._handleTransferNotify(event);
+        } catch (e) {
+            console.log("error handling notification", e, e.stack);
+            if (this._reject != null) {
+                const reject = this._reject;
+                this._resolve = null;
+                this._reject = null;
+                this._incomingFile = null;
+                this._incomingOffset = 0;
+                this._offset = 0;
+                reject(e);
+            }
+        }
+    }
+
+    async _handleTransferNotify(event) {
         if (this._resolve == null) {
             // No command is waiting for this. Parsing it would call a null
             // _resolve or _reject and throw out of the event handler, and
@@ -309,7 +359,30 @@ class FileTransferClient {
         if (this._incomingFile == null) {
             this._incomingFile = new Uint8Array(totalLength);
         }
-        this._incomingFile.set(new Uint8Array(payload.buffer.slice(headerSize, payload.byteLength)), chunkOffset);
+        // Copy only what the header declared, and reject anything longer as a
+        // desynchronized stream. Chrome on Windows delivers each notification twice
+        // when pairing happened mid-connection; the duplicated header makes the
+        // payload longer than promised, and copying it blindly would overrun
+        // _incomingFile and leave the read promise unsettled forever.
+        //
+        // The duplicate notifications should not happen, because the read in
+        // checkConnection() makes pairing precede the subscribe. But that is based on
+        // observation, not on knowing Chrome's internals, so this provides additional
+        // protection, and also catches a desynchronized stream from any other cause.
+        if (payload.byteLength > headerSize + chunkLength ||
+            chunkOffset + chunkLength > this._incomingFile.byteLength) {
+            this._reject(new ProtocolError(
+                "READ_DATA payload does not match its header: " +
+                (payload.byteLength - headerSize) + " bytes for a " + chunkLength +
+                "-byte chunk at offset " + chunkOffset + " of " + totalLength));
+            this._resolve = null;
+            this._reject = null;
+            this._incomingFile = null;
+            this._incomingOffset = 0;
+            return ANY_COMMAND;
+        }
+        this._incomingFile.set(
+            new Uint8Array(payload.buffer.slice(headerSize, headerSize + chunkLength)), chunkOffset);
         this._incomingOffset += chunkLength;
 
         let remaining = this._incomingFile.byteLength - this._incomingOffset;
