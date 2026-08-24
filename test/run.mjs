@@ -342,6 +342,45 @@ const NAMES = ["a", "ab", "code.py", "boot.py", "x.txt", "settings.toml", "boot_
     "a_rather_long_file_name_here.txt", "adafruit_some_library_or_other.mpy",
     "0123456789012345678901234567890123456789012345678901234567890123"];
 
+await test("connect reads before subscribing, and stops before starting", async () => {
+    const fs = fsWith([], {"/code.py": "hi"});
+    const {ble, client} = connect(fs, 244, GROUPINGS.greedy());
+    await withTimeout(client.readFile("/code.py"), 2000, "read");
+    // The read is what makes the browser pair; the stop is what makes the
+    // subscribe actually write the CCCD on a reconnect.
+    assertEqual(ble.charCalls, ["readValue", "stopNotifications", "startNotifications"],
+        "connect-time call order");
+});
+
+await test("a failed read or stop does not prevent connecting", async () => {
+    for (const flag of ["readValueThrows", "stopNotificationsThrows"]) {
+        const fs = fsWith([], {"/code.py": "hi"});
+        const {ble, client} = connect(fs, 244, GROUPINGS.greedy());
+        ble[flag] = true;
+        const contents = await withTimeout(client.readFile("/code.py"), 2000, flag);
+        assertEqual(contents, "hi", flag);
+    }
+});
+
+await test("duplicated notifications reject instead of hanging", async () => {
+    // GROUPINGS.single so the header goes out on its own: its duplicate then lands
+    // before the data, which is the ordering that used to throw out of the
+    // notification handler and leave the caller waiting forever.
+    for (const op of ["readFile", "listDir"]) {
+        const fs = fsWith(["/sub"], {"/code.py": "hi"});
+        const {ble, client} = connect(fs, 244, GROUPINGS.single());
+        ble.duplicateNotifications = true;
+        let rejected = false;
+        try {
+            await withTimeout(op === "readFile" ? client.readFile("/code.py") : client.listDir("/"),
+                2000, op + " with duplicated notifications");
+        } catch (e) {
+            rejected = true;
+        }
+        assertEqual(rejected, true, op + " rejects when every notification arrives twice");
+    }
+});
+
 await test("fuzz: random listings over random notification splits", async () => {
     for (let seed = 1; seed <= 400; seed++) {
         const rng = makeRng(seed);

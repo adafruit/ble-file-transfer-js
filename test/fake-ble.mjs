@@ -76,12 +76,32 @@ export class FakeBluetoothDevice {
                 return v;
             },
         };
+        // Order of the connect-time calls, so tests can assert that the client
+        // reads before it subscribes and stops before it starts.
+        this.charCalls = [];
         this.transferChar = {
             addEventListener(type, fn) { self.listeners[type].push(fn); },
             removeEventListener(type, fn) {
                 self.listeners[type] = self.listeners[type].filter((f) => f !== fn);
             },
-            async startNotifications() { return this; },
+            async readValue() {
+                self.charCalls.push("readValue");
+                if (self.readValueThrows) {
+                    throw new Error("GATT operation not permitted");
+                }
+                return new DataView(new ArrayBuffer(0));
+            },
+            async stopNotifications() {
+                self.charCalls.push("stopNotifications");
+                if (self.stopNotificationsThrows) {
+                    throw new Error("not subscribed");
+                }
+                return this;
+            },
+            async startNotifications() {
+                self.charCalls.push("startNotifications");
+                return this;
+            },
             async writeValueWithoutResponse(value) { await self._deviceReceive(toBytes(value)); },
         };
         this.gatt = {
@@ -122,18 +142,23 @@ export class FakeBluetoothDevice {
         }
     }
 
-    // Notifications arrive as separate tasks, like real BLE events.
+    // Notifications arrive as separate tasks, like real BLE events. Set
+    // duplicateNotifications to deliver each one twice, which is what Chrome on
+    // Windows does when pairing happened during the connection.
     _notify(bytes) {
         this.log.push(bytes);
-        setTimeout(() => {
-            if (!this.connected) {
-                return;
-            }
-            const value = new DataView(bytes.slice().buffer);
-            for (const fn of this.listeners.characteristicvaluechanged) {
-                fn({target: {value}});
-            }
-        }, 0);
+        const deliveries = this.duplicateNotifications ? 2 : 1;
+        for (let i = 0; i < deliveries; i++) {
+            setTimeout(() => {
+                if (!this.connected) {
+                    return;
+                }
+                const value = new DataView(bytes.slice().buffer);
+                for (const fn of this.listeners.characteristicvaluechanged) {
+                    fn({target: {value}});
+                }
+            }, 0);
+        }
     }
 
     disconnect() {
